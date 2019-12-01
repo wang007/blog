@@ -134,6 +134,8 @@ deploy:
 然后ok搞定。
 此时确保你的git和ssh是配置正确的。否则会失败。
 
+
+先执行hexo g，
 最后执行hexo d，发布到github.io上。
 ```
 hexo d
@@ -223,6 +225,10 @@ about也是差不多，就是描述关于我的内容。
 
 至此，好像基本差不多了。
 还有一个建议，就是把blog目录sources也放到github上，这样就能做一个备份。
+
+=== 
+update: 后续使用hexo图片遇到了图片不显示的问题，最后发现是插件有bug。
+        这里记录一下：https://www.jianshu.com/p/3db6a61d3782
 
 
 --- 
