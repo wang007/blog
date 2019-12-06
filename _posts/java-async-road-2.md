@@ -235,21 +235,529 @@ public class FutureTask<V> implements RunnableFuture<V> {
 
 ### 拓展Future
 既然Future#get方法只能阻塞获取节点，而且上面分析了FutureTask也已经留了口子，那么就实现一个基于回调可监听的Future。
+具体源码在[ListenableFuture]()
+```java
+        //实现后的效果
+        ListenableExecutorService executor = ListenableExecutor.create(Executors.newSingleThreadExecutor());
+        executor.submit(() -> {
+            //do something
+            return "submit";
+        }).addHandler(ar -> {
+            if (ar.succeeded()) {
+                System.out.println("submit result -> " + ar.result());
+            } else {
+                ar.cause().printStackTrace();
+            }
+        });
+        //或者用链式串联异步结果
 
-
-
-
-
-
-
+        executor.submit(() -> {
+            //do something
+            return "submit";
+        }).flatMap(str -> {
+            System.out.println("result");
+            return "other";
+        }).map(str -> {
+            //do something
+            return str.length();
+        }).addHandler(ar -> {
+            if (ar.succeeded()) {
+                System.out.println("result length -> " + ar.result());
+            } else {
+                ar.cause().printStackTrace();
+            }
+        });
+```
 
 ### 极其丑陋的CompletableFuture
+> CompletableFuture继承了CompletionStage,java中的阻塞Future，所以CompletableFuture本身还是可以阻塞的。
 
+#### CompletionStage
+CompletionStage所有的方法，定义如何获取结果并做响应的操作。但是没有定义如何未这个异步结果设置结果，而设置这个操作直接就实现在具体的实现类
+CompletableFuture中，这就显得非常糟糕了，使用者必须去依赖CompletableFuture这个具体的实现了。
+理想情况下，应该设置一个专门设置异步结果的接口。假设叫做Promise。 Promise只需要关注如何写，CompletionStage只需要关注如何获取结果。
+而Netty就是这么做的。参考Netty的Promise，Future。
 
+CompletionStage api的设计同样非常糟糕，重复功能相同的api。以至于后面我用同一个实现方法，其他接口方法都可以直接复用这个实现方法。
+而且接口方法很难理解，远没有reactive的命名简洁。
 
+下面就先给api做一个分类。后面使用的时候可以参考这个分类使用。
+1. 在异步结果正常完成时调用。区别在于入参和出参。 fuck api  相当于reactive#map
+     1. {@link #thenApply(Function),#thenApplyAsync(Function),#thenApplyAsync(Function, Executor)}
+     2. {@link #thenAccept(Consumer),#thenAcceptAsync(Consumer),#thenAcceptAsync(Consumer, Executor)}
+     3. {@link #thenRun(Runnable),#thenRunAsync(Runnable),#thenAcceptAsync(Consumer, Executor)}
+2. 当两个异步结果都正常完成时调用，区别在于入参和出参。fuck api  相当于reactive#zipWith
+     1. {@link #thenCombine(CompletionStage, BiFunction),#thenCombineAsync(CompletionStage, BiFunction)}
+        {@link #thenCombineAsync(CompletionStage, BiFunction, Executor)}
+     2. {@link #thenAcceptBoth(CompletionStage, BiConsumer),#thenAcceptBothAsync(CompletionStage, BiConsumer),
+        {@link #thenAcceptBothAsync(CompletionStage, BiConsumer, Executor)}
+     3. {@link #runAfterBoth(CompletionStage, Runnable),#runAfterBothAsync(CompletionStage, Runnable)}
+        {@link #runAfterBothAsync(CompletionStage, Runnable, Executor)}
+3. 两个异步结果任意其中之一正常完成时调用，区别在于入参和出参。 fuck api  相当于reactive#ambWith && map
+     1. {@link #applyToEither(CompletionStage, Function),#applyToEitherAsync(CompletionStage, Function)}
+        {@link #applyToEitherAsync(CompletionStage, Function, Executor)}
+     2. {@link #acceptEither(CompletionStage, Consumer),#acceptEitherAsync(CompletionStage, Consumer)}
+        {@link #acceptEitherAsync(CompletionStage, Consumer, Executor)}
+     3. {@link #runAfterEither(CompletionStage, Runnable),#runAfterEitherAsync(CompletionStage, Runnable)}
+        {@link #runAfterEitherAsync(CompletionStage, Runnable, Executor)}
+4. 当前一个异步结果正常完成时产生一个新的不同类型的异步结果。  挺好。 相当于reactive#flatMap        
+    1. {@link #thenCompose(Function),#thenComposeAsync(Function, Executor),#thenComposeAsync(Function)}
+5. 当异步结果异常完成时调用  相当于reactive#onErrorReturn
+    1. {@link #exceptionally(Function)}
+6. 当异步结果完成(包括正常或异常)时调用。 相当于reactive#doOnSubscribe
+    1. {@link #whenComplete(BiConsumer),#whenCompleteAsync(BiConsumer),#whenCompleteAsync(BiConsumer, Executor)}
+    2. {@link #handle(BiFunction),#handleAsync(BiFunction),#handleAsync(BiFunction, Executor)}
 
+所以一共就6种功能的方法，map, zipWith, ambWith(or) && map, flatMap, onErrorReturn, doOnSubscribe.
+async结尾的方法，是带切换线程的方法。
 
+#### CompletionStage的实现
+> CompletableFuture也并没有实现一个功能相同的方法，其他功能相同的方法复用。只是区别有没有线程池(async结尾的方法)做一个复用。
+  由于源码实现比较多，所以我相同功能的方法拿出一个来分析即可，其他基本都一样。
+  
+1. map操作符 == thenApply方法
+```java
+public class CompletableFuture<T> implements Future<T>, CompletionStage<T> {
+        
+        //用于包装异常结果，取结果时，result instanceOf AltResult 即可判断是否是异常结果
+        static final class AltResult {
+            final Throwable ex; 
+            AltResult(Throwable ex) { this.ex = ex; }
+        }
+        static final AltResult NIL = new AltResult(null);  //当ex == null, 代表成功的null结果。
+    
+        volatile Object result;    // 
+        volatile WaitNode waiters; // get，get(timeOut)方法调用阻塞的线程节点
+        volatile CompletionNode completions;  //操作符对应的操作符节点。结果未完成时需要保存下来，待结果完成时在回调操作符。
+        
+        //操作符节点是用单向链表保存起来的
+        static final class CompletionNode {
+            final Completion completion;
+            volatile CompletionNode next;
+            CompletionNode(Completion completion) { this.completion = completion; }
+       }
+       
+       public <U> CompletableFuture<U> thenApply
+               (Function<? super T,? extends U> fn) {
+               return doThenApply(fn, null);
+       }
+       
+       //最后调用到doThenApply方法
+       //fn：操作符对应的操作，一般以lambda的形式提供，
+       //e：是否需要切换线程，async结尾的方法 e != null
+       private <U> CompletableFuture<U> doThenApply
+        (Function<? super T,? extends U> fn, Executor e) {
+        if (fn == null) throw new NullPointerException();
+        
+        //创建新的异步结果并在该方法结束后返回这个新的异步结果。
+        // 在当前异步结果完成时，设置这个新的异步结果，那么就像管道一样，result在这CompletableFuture组成的管道上流通。
+        CompletableFuture<U> dst = new CompletableFuture<U>();  
+        ThenApply<T,U> d = null;
+        Object r;
+        //结果未完成时，尝试加入到操作符单向链表上
+        if ((r = result) == null) {
+            CompletionNode p = new CompletionNode
+                (d = new ThenApply<T,U>(this, fn, dst, e));
+            while ((r = result) == null) {
+                //将操作符节点添加到链表头节点上，加入成功后，退出循环。
+                if (UNSAFE.compareAndSwapObject
+                    (this, COMPLETIONS, p.next = completions, p))
+                    break;
+            }
+        }
+        //此时，有两种情况 1. 结果已完成，2.操作符节点以成功加入链表中
+        //加入if的临界条件：结果已完成，且操作符未执行过
+        if (r != null && (d == null || d.compareAndSet(0, 1))) {
+            T t; Throwable ex;
+            if (r instanceof AltResult) { //result是异常结果或者null。
+                ex = ((AltResult)r).ex; //ex == null时，null结果的完成结果。 ex != null时，异常结果。
+                t = null;
+            }
+            else { //result是正常结果且非null。
+                ex = null;
+                @SuppressWarnings("unchecked") T tr = (T) r;
+                t = tr;
+            }
+            U u = null;
+            if (ex == null) { //ex == null，正常结果。另外：异常结果时，不执行操作符.
+                try {
+                    if (e != null) //入参线程池 != null，操作符在线程池中执行
+                        execAsync(e, new AsyncApply<T,U>(t, fn, dst));
+                    else
+                        u = fn.apply(t); //执行操作符的操作。
+                } catch (Throwable rex) {
+                    ex = rex;
+                }
+            }
+             //e == null说明即再次执行操作符操作。若e != null，说明操作符在线程池e中完成，那么这个新的异步结果的结果也会在线程池e中完成
+             //ex != null，异常结果，则不需要借用线程池执行操作符操作了
+            if (e == null || ex != null)
+                //最终把结果设置到新的异步结果上
+                dst.internalComplete(u, ex); 
+        }
+        helpPostComplete();   //这个方法非常糟糕，会让操作符的回调执行所在的线程模糊。后续高版本的jdk8好像重写CompletableFuture，把它给去掉了
+        return dst;
+    }
+    //ThenApply对象，挂载到操作符链表上的操作跟if块的操作差不多，这里就不说了
+    
+    //再看看提交到线程池e中的AsyncApply如何操作的
+    static final class AsyncApply<T,U> extends Async {
+            final T arg;
+            final Function<? super T,? extends U> fn;
+            final CompletableFuture<U> dst;
+            AsyncApply(T arg, Function<? super T,? extends U> fn,
+                       CompletableFuture<U> dst) {
+                this.arg = arg; this.fn = fn; this.dst = dst;
+            }
+            public final boolean exec() {
+                //还是跟if块的代码差不多。
+                //这个d，就是doThenApply方法传进来的dst。
+                CompletableFuture<U> d; U u; Throwable ex;
+                if ((d = this.dst) != null && d.result == null) {
+                    try {
+                        u = fn.apply(arg);
+                        ex = null;
+                    } catch (Throwable rex) {
+                        ex = rex;
+                        u = null;
+                    }
+                    d.internalComplete(u, ex);
+                }
+                return true;
+            }
+            private static final long serialVersionUID = 5232453952276885070L;
+        }
+        
+        //为异步结果设置结果，典型的CAS应用
+        final void internalComplete(T v, Throwable ex) {
+                if (result == null)
+                    UNSAFE.compareAndSwapObject
+                        (this, RESULT, null,
+                         (ex == null) ? (v == null) ? NIL : v :
+                         new AltResult((ex instanceof CompletionException) ? ex :
+                                       new CompletionException(ex)));
+                postComplete(); // help out even if not triggered，非常糟糕，在这里调用帮助处理
+        }
+        
+        final void postComplete() {
+                WaitNode q; Thread t;
+                //唤醒阻塞的线程节点
+                while ((q = waiters) != null) {
+                    if (UNSAFE.compareAndSwapObject(this, WAITERS, q, q.next) &&
+                        (t = q.thread) != null) {
+                        q.thread = null;
+                        LockSupport.unpark(t);
+                    }
+                }
+                
+                //调用操作符链表上所有操作符节点，c 就是ThenApply的父类
+                CompletionNode h; Completion c;
+                while ((h = completions) != null) {
+                    if (UNSAFE.compareAndSwapObject(this, COMPLETIONS, h, h.next) &&
+                        (c = h.completion) != null)
+                        c.run();
+                }
+        }
+        
+        //设置正常结果
+         public boolean complete(T value) {
+                 //如果 value == null, result 设置成 NIL.
+                 boolean triggered = result == null &&
+                      UNSAFE.compareAndSwapObject(this, RESULT, null,
+                           value == null ? NIL : value);
+                      postComplete();  //处理阻塞等待的线程节点和操作符，这里处理就没毛病
+                      return triggered;
+         }
+         
+         //设置异常结果
+         public boolean completeExceptionally(Throwable ex) {
+                 if (ex == null) throw new NullPointerException();
+                 boolean triggered = result == null &&
+                     UNSAFE.compareAndSwapObject(this, RESULT, null, new AltResult(ex));  //异常结果用AltResult包装
+                 postComplete();  //处理阻塞等待的线程节点和操作符，这里处理就没毛病
+                 return triggered;
+          }
+         
+}
+```
+为什么说helpPostComplete(), internalComplete方法中postComplete方法很糟糕呢？
+这会让操作符在哪个线程处理变得很迷，如果对一些线程敏感的代码，那么可能导致意想不到的bug，而且不了解这一机制的话，这bug也很难会被发现。
 
+举个例子
+```java
+    public static void main(String[] args) throws InterruptedException {
+        CompletableFuture<String> fut = new CompletableFuture<>();
+        new Thread(() -> {
+            fut.thenAccept(v1 -> {
+                try { Thread.sleep(1000L); } catch (InterruptedException e) {}
+                System.out.println("thread-name-v1 " + Thread.currentThread().getName()); });
 
+            fut.thenAccept(v1 -> {
+                try { Thread.sleep(1000L); } catch (InterruptedException e) {}
+                System.out.println("thread-name-v1 " + Thread.currentThread().getName()); });
 
+            fut.thenAccept(v1 -> {
+                try { Thread.sleep(1000L); } catch (InterruptedException e) {}
+                System.out.println("thread-name-v1 " + Thread.currentThread().getName()); });
 
+            fut.thenAccept(v1 -> {
+                try { Thread.sleep(1000L); } catch (InterruptedException e) {}
+                System.out.println("thread-name-v1 " + Thread.currentThread().getName()); });
+
+            fut.thenAccept(v1 -> {
+                try { Thread.sleep(1000L); } catch (InterruptedException e) {}
+                System.out.println("thread-name-v1 " + Thread.currentThread().getName());});
+
+        }, "thread-1").start();
+
+        Thread.sleep(2000L);
+        new Thread(() -> fut.complete("111"), "thread-2").start();
+
+        new Thread(() -> fut.thenAccept(str -> {}), "thread-3").start();
+    }
+```
+上面的例子println是否啥？你猜到了吗？
+答案是：thread-2 或者 thread-3。
+而正常我们会认为要么是thread-1（异步结果已完成，立即执行操作符），要么thread-2（设置结果时，处理操作符）
+
+2. zipWith操作符 == thenCombine
+当前的CompletableFuture和other CompletableFuture同时完成时，执行操作符
+```java
+    public <U,V> CompletableFuture<V> thenCombine
+        (CompletionStage<? extends U> other,
+         BiFunction<? super T,? super U,? extends V> fn) {
+        return doThenCombine(other.toCompletableFuture(), fn, null);
+    }
+    
+    //需要当前的CompletableFuture和other同时完成时，才调用操作符
+    private <U,V> CompletableFuture<V> doThenCombine
+        (CompletableFuture<? extends U> other,
+         BiFunction<? super T,? super U,? extends V> fn,
+         Executor e) {
+        if (other == null || fn == null) throw new NullPointerException();
+        CompletableFuture<V> dst = new CompletableFuture<V>();  //还是跟上面分析的一样，最后它
+        ThenCombine<T,U,V> d = null;
+        Object r, s = null;
+        
+        //当任意其中一个异步结果未完成时，进入if块
+        if ((r = result) == null || (s = other.result) == null) {
+            d = new ThenCombine<T,U,V>(this, other, fn, dst, e);
+            CompletionNode q = null, p = new CompletionNode(d);
+            while ((r == null && (r = result) == null) ||
+                   (s == null && (s = other.result) == null)) {
+                
+                //第一次进来时，q == null，先执行 else-if
+                if (q != null) {
+                    if (s != null ||
+                        UNSAFE.compareAndSwapObject
+                        (other, COMPLETIONS, q.next = other.completions, q))  //other异步结果未完成时，挂载到操作符链表上
+                        break;
+                }
+                else if (r != null ||
+                         UNSAFE.compareAndSwapObject
+                         (this, COMPLETIONS, p.next = completions, p)) {  //当前异步结果未完成时，挂载到操作符链表上
+                    if (s != null)
+                        break;
+                    q = new CompletionNode(d);
+                }
+            }
+        }
+        
+        //当两个异步结果都完成时，且操作符还未执行时，进入if块
+        if (r != null && s != null && (d == null || d.compareAndSet(0, 1))) {
+            T t; U u; Throwable ex;
+            if (r instanceof AltResult) { //第一个异步结果 异常完成或null
+                ex = ((AltResult)r).ex;
+                t = null;
+            }
+            else {
+                ex = null;
+                @SuppressWarnings("unchecked") T tr = (T) r;
+                t = tr;
+            }
+            if (ex != null) //说明第一个结果异常了，那么就不用去获取第二个异步结果的结果了。
+                u = null;
+            else if (s instanceof AltResult) {
+                ex = ((AltResult)s).ex;
+                u = null;
+            }
+            else {
+                @SuppressWarnings("unchecked") U us = (U) s;
+                u = us;
+            }
+            V v = null;
+            if (ex == null) { //当两个异步结果都正常完成时，执行操作符
+                try {
+                    if (e != null) //上面分析过了
+                        execAsync(e, new AsyncCombine<T,U,V>(t, u, fn, dst));
+                    else
+                        v = fn.apply(t, u);
+                } catch (Throwable rex) {
+                    ex = rex;
+                }
+            }
+            //最终把结果设置到新的异步结果上
+            if (e == null || ex != null) 
+                dst.internalComplete(v, ex);
+        }
+        helpPostComplete();
+        other.helpPostComplete();
+        return dst;
+    }
+
+```
+thenCombine方法，会到操作符的操作ThenCombine同时挂载到两个异步结果的操作符链表中。通过CAS控制，只有一次机会执行操作符操作。
+ThenCombine跟if块的代码类似，就不展开说了。
+
+3. (ambWith && map) == applyToEither
+当前的CompletableFuture跟other CompletableFuture任意一个完成时，执行操作符。
+```java
+    public <U> CompletableFuture<U> applyToEither
+        (CompletionStage<? extends T> other,
+         Function<? super T, U> fn) {
+        return doApplyToEither(other.toCompletableFuture(), fn, null);
+    }
+    
+    private <U> CompletableFuture<U> doApplyToEither
+            (CompletableFuture<? extends T> other,
+             Function<? super T, U> fn,
+             Executor e) {
+            if (other == null || fn == null) throw new NullPointerException();
+            CompletableFuture<U> dst = new CompletableFuture<U>();
+            ApplyToEither<T,U> d = null;
+            Object r;
+            
+            //当前异步结果和other 异步结果都未完成时，进入if块
+            if ((r = result) == null && (r = other.result) == null) {
+                d = new ApplyToEither<T,U>(this, other, fn, dst, e);
+                CompletionNode q = null, p = new CompletionNode(d);
+                while ((r = result) == null && (r = other.result) == null) {
+                    if (q != null) {
+                        if (UNSAFE.compareAndSwapObject
+                            (other, COMPLETIONS, q.next = other.completions, q))
+                            break;
+                    }
+                    //先挂载到当前异步结果上，
+                    else if (UNSAFE.compareAndSwapObject
+                             (this, COMPLETIONS, p.next = completions, p))
+                        q = new CompletionNode(d);
+                }
+            }
+            //此时，r可能来自result，也有可能来自other.result。
+            //当两个异步结果都未完成时且操作符未执行过。
+            if (r != null && (d == null || d.compareAndSet(0, 1))) {
+                //到这里就跟doThenApply基本一样了，就不展开分析了
+                T t; Throwable ex;
+                if (r instanceof AltResult) {
+                    ex = ((AltResult)r).ex;
+                    t = null;
+                }
+                else {
+                    ex = null;
+                    @SuppressWarnings("unchecked") T tr = (T) r;
+                    t = tr;
+                }
+                U u = null;
+                if (ex == null) {
+                    try {
+                        if (e != null)
+                            execAsync(e, new AsyncApply<T,U>(t, fn, dst));
+                        else
+                            u = fn.apply(t);
+                    } catch (Throwable rex) {
+                        ex = rex;
+                    }
+                }
+                if (e == null || ex != null)
+                    dst.internalComplete(u, ex);
+            }
+            helpPostComplete();
+            other.helpPostComplete();
+            return dst;
+        }
+```
+3. flatMap == thenCompose
+```java
+public class Test {
+    public <U> CompletableFuture<U> thenCompose
+        (Function<? super T, ? extends CompletionStage<U>> fn) {
+        return doThenCompose(fn, null);
+    }
+    
+    private <U> CompletableFuture<U> doThenCompose
+            (Function<? super T, ? extends CompletionStage<U>> fn,
+             Executor e) {
+            if (fn == null) throw new NullPointerException();
+            CompletableFuture<U> dst = null;
+            ThenCompose<T,U> d = null;
+            Object r;
+            
+            //当前结果未完成时，尝试挂载到当前异步结果上
+            if ((r = result) == null) {
+                dst = new CompletableFuture<U>();
+                CompletionNode p = new CompletionNode
+                    (d = new ThenCompose<T,U>(this, fn, dst, e));
+                while ((r = result) == null) {
+                    if (UNSAFE.compareAndSwapObject
+                        (this, COMPLETIONS, p.next = completions, p))
+                        break;
+                }
+            }
+            
+            //当前异步结果已完成时，且操作符未执行过
+            if (r != null && (d == null || d.compareAndSet(0, 1))) {
+                T t; Throwable ex;
+                if (r instanceof AltResult) {
+                    ex = ((AltResult)r).ex;
+                    t = null;
+                }
+                else {
+                    ex = null;
+                    @SuppressWarnings("unchecked") T tr = (T) r;
+                    t = tr;
+                }
+                //异步结果，正常完成
+                if (ex == null) {
+                    if (e != null) {
+                        if (dst == null)
+                            dst = new CompletableFuture<U>();
+                        execAsync(e, new AsyncCompose<T,U>(t, fn, dst));
+                    }
+                    else {
+                        try {
+                            //返回新的异步结果，正常情况下，doThenCompose方法返回的是这个异步结果。
+                            CompletionStage<U> cs = fn.apply(t); 
+                            if (cs == null ||
+                                (dst = cs.toCompletableFuture()) == null)
+                                ex = new NullPointerException();
+                        } catch (Throwable rex) {
+                            ex = rex;
+                        }
+                    }
+                }
+                
+                if (dst == null)
+                    dst = new CompletableFuture<U>();
+                //异步结果异常完成时，或者执行操作符时发生异常，通知新的异步结果。
+                if (ex != null)
+                    dst.internalComplete(null, ex);
+            }
+            helpPostComplete();
+            dst.helpPostComplete();
+            return dst;
+        }
+}
+```
+4. 后面的exceptionally，whenComplete，handle，实现就跟thenApply差不多。这里就不展开说了。
+   CompletableFuture源码的核心流程都已经覆盖完了。
+5. 即使CompletionStage，CompletableFuture怎么怎么不好，但没办法，这是标准库的类（亲儿子）。所以做好跟标准库的兼容还是有必要的。
+
+写了点异步相关的基础库，之前想直接继承CompletableFuture做拓展就行了。后面发现了上面所说的它回调机制的坑，
+所以就自己重写了一个CompletionStage。
+总体上，还是非常简单的。基于回调(addHandler)的方式，把上面的所有操作符都实现了。源码在这里。[CompletableResult]()
+
+总结：
+1. Future的源码分析。
+2. 如何基于Future，改成基于回调机制的Future。
+3. CompletionStage，CompletableFuture的源码分析，分类总结。
+4. 如何简单的实现一个CompletionStage。([pandora](https://www.github.com/wang007/pandora))
