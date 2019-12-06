@@ -71,15 +71,15 @@ java现在主流的同步编程模型已经越来越难以支撑现阶段互联�
 
 - 我们经常所说的异步应用，异步非阻塞框架等，这个“异步”是指应用层面的异步，即异步方法调用不会阻塞线程且注册一个callback，在callback里回调通知你结果。从这个角度看，确实异步（通知机制）非阻塞（调用方是否阻塞）的。 
 - 但是在IO层面，对应的OS层面来说应该同步非阻塞IO，同步非阻塞IO（IO多路复用）。所以Netty，Vert.x，Webflux等一众选手都应该是使用同步非阻塞IO的异步非阻塞框架/工具。 emmm... 这个有点绕。
-所以一说异步框架，指同步非阻塞IO应用。
+所以一说异步非阻塞框架，一般指的是上层代码是异步非阻塞的，但是IO层面是同步非阻塞IO。
 
 什么是异步IO？
 
-#####  不因IO而阻塞的IO就叫异步IO。 当然这是废话，如果我这么说，我估计你都会想打我。
+####  不因IO而阻塞的IO就叫异步IO。 当然这是废话，如果我这么说，我估计你都会想打我。
 
 当然饭还是得一口一口饭， 先来说说 阻塞/ 非阻塞，同步/ 异步。当然这个老生常谈的话题，网上一搜有说好的，有说烂的。其中往往烂的占据了大多数，而且里面可能大量还充斥着错误的理解，包括我自己的理解也不一定说就是对的。所以还看各位看官擦亮眼睛才是最重要的。
 
-#####  阻塞/非阻塞
+####  阻塞/非阻塞
 ![](./java-async-road/blocking_io.png)
 发起调用之后，一直等待其数据响应并读取返回。
 阻塞：发起调用时不能立即返回，必须需要有结果时才会返回。
@@ -88,7 +88,7 @@ java现在主流的同步编程模型已经越来越难以支撑现阶段互联�
 发起调用之后立即返回并通过返回状态码告知调用者数据是否准备返回完毕。
 非阻塞：发起调用后立即返回并返回的不一定是最终结果。
 
-##### 所以阻塞/非阻塞IO说的是调用方是否会因IO而blocking，描述的主体是调用方。
+#### 所以阻塞/非阻塞IO说的是调用方是否会因IO而blocking，**描述的主体是调用方**。(敲黑板！！！，重点)
 
 下面将举例一个简单的例子。监听端口，一旦有链接建立时，响应hello world。看看两者有什么区别。
 
@@ -111,13 +111,14 @@ public class IOClient {
 }
 ```
 
+//这是阻塞的，
 ```java
     public static void main(String[] args) throws Exception {
 
-        SocketChannel socket = getSocket();
+        SocketChannel socket = getSocket(); //一直阻塞到有连接进来时，即创建socket
         byte[] bytes = "hello world".getBytes(StandardCharsets.UTF_8);
         System.out.println(Arrays.toString(bytes));
-        socket.write(ByteBuffer.wrap(bytes));
+        socket.write(ByteBuffer.wrap(bytes)); //
         socket.close();
     }
 
@@ -133,6 +134,7 @@ public class IOClient {
     }
 ```
 
+//这是非阻塞的
 ```java
 public static void main(String[] args) throws Exception {
         startServer(socket -> {
@@ -154,6 +156,7 @@ public static void main(String[] args) throws Exception {
         System.out.println("bind 8080");
         new Thread(() -> {
             try {
+                //需要不断的去检测serverSocketChannel
                 while (true) {
                     SocketChannel sc = ssChannel.accept();
                     if (sc == null) {
@@ -179,9 +182,10 @@ public static void main(String[] args) throws Exception {
 ![](./java-async-road/async_io.png)
 
 在这个异步IO里，发起IO调用立即返回，等IO到达时再回调通知你。
-这个异步IO跟上面两个有明显区别是**状态通知机制**。
-同步：是调用方主动去查询状态。
-异步：是被调用方主动通知你。
+#### 这个异步IO跟上面两个有明显区别是**状态通知机制**。
+> 同步：是调用方主动去查询状态。
+  异步：是被调用方主动通知你。
+
 
 
 下面演示一下Java8自带的异步IO代码
@@ -214,7 +218,7 @@ public static void main(String[] args) throws IOException, InterruptedException 
 ```
 跟上面的非阻塞IO相比，这个使用起来就更加多了，不再需要写while主动去检测状态，而是注册一个回调方法并在回调方法中处理发送data的业务。
 同样的，非阻塞IO经过稍加封装之后也可以跟上述的异步IO一样，注册一个回调方法即可。
-这里要稍加说明的是这个jdk提供的异步IO，实际上也是封装IO多路复用实现的。也就是说这个异步IO是假的，通过封装epoll来实现的（特指Linux环境）。同时这个有一个非常明显的缺点就是很难自己精确控制回调执行所在的线程。
+这里要稍加说明的是这个jdk提供的异步IO（也就是Java NIO2），实际上也是封装IO多路复用实现的。也就是说这个异步IO是假的，通过封装epoll来实现的（特指Linux环境）。同时这个有一个非常明显的缺点就是很难自己精确控制回调执行所在的线程。
 关于这个“异步IO”，我会专门出一篇文章来说说。因为一些国产“异步IO”框架，穿上伪异步IO的外衣，就秒天秒地，轻松干掉netty，C10000000000K也不再是难题。
 
 
@@ -222,12 +226,12 @@ public static void main(String[] args) throws IOException, InterruptedException 
 #### 阻塞/非阻塞是对于调用方角度来描述的，调用方法调用这个方法会不会阻塞。
 #### 同步/异步是对于调用方和被调用方通知机制来描述的。
 #### 同步：需要调用方手动去检测。异步：被调用方主动通知你，而这个通知通常是callback的方式。
-#### 所以，同步阻塞IO，同步非阻塞IO，IO多路复用（epoll）都是同步的,这些IO都需要在数据到来之时主动去读取。
+> 所以，同步阻塞IO，同步非阻塞IO，IO多路复用（epoll）都是同步的,这些IO都需要在数据到来之时主动去读取。
 
 对于同步阻塞IO，同步非阻塞IO，异步非阻塞IO在Linux能找到对应的IO模型。
 唯独异步阻塞IO找不到一个与之对应的IO模型，主要是这个IO模型没啥实际用途。调用方法阻塞，然后回调通知你？？？ 你想想看也没有对应的应用场景吧。
 
-##### IO多路复用
+#### IO多路复用
 前面说了，非阻塞IO，需要自己不断的检测所有的socket。这种操作非常低效。所以就有了IO多路复用，其中代表就是epoll。关于epoll的原理，这篇文章讲的挺不错的，所以直接看这个文章就好了（[大话select，poll，epoll](https://cloud.tencent.com/developer/article/100548)）
 这里说个它们区别的总结：
 - epoll的时间复杂度是O(1)的，而select，poll的时间复杂度是O(n)的。所以理论上，epoll不受连接数影响，select，poll连接越多效率越低。
@@ -443,7 +447,7 @@ startServer方法中的Thread会一直跑，不会因为IO而陷入阻塞，同�
 
 
 
-### 总结: 
+### 总结:
 1. 所以我们所说的异步非阻塞框架，其实说的是基于同步非阻塞IO实现的异步非阻塞框架。
 2. 这些异步非阻塞框架因为底层是非阻塞IO，不会因为IO导致线程阻塞以及线程上下文切换，恢复等一系列工作，且因为每个线程都是无阻塞的高效运行着，所以只需要少量的线程尽可能跑满cpu即可。
 3. 因为上层因为异步，下面往往是epoll实现的事件通知机制来处理。所以任何异步方法的调用都伴随着callback。

@@ -4,7 +4,9 @@ date: 2019-11-28 15:07:18
 tags: 
  - java
  - 异步
-
+ - CompletionStage
+ - CompletableFuture
+ - ListenableFuture
 categories: 
  - java
  - 异步
@@ -52,7 +54,7 @@ public interface Future<V> {
   boolean isDone();
 
   //如果任务未执行完，那么将阻塞完到任务执行完。
-  //任务执行过程中发现异常的话，异常将会包装到ExecutionException中并抛出。
+  //任务执行过程中发生异常的话，异常将会包装到ExecutionException中并抛出。
   V get() throws InterruptedException, ExecutionException;
 
   //带超时的get方法
@@ -79,14 +81,14 @@ public class FutureTask<V> implements RunnableFuture<V> {
  
     private volatile int state; //状态，代表任务执行到哪个阶段， 同时也作为竞态条件
     private static final int NEW          = 0;   //新建阶段
-    private static final int COMPLETING   = 1;   //callable已执行完，等待设置结果
+    private static final int COMPLETING   = 1;   //callable已执行完，下一步马上设置结果
     private static final int NORMAL       = 2;   //任务执行完，并设置设置正常的result
     private static final int EXCEPTIONAL  = 3;   //任务执行过程中发生异常
     private static final int CANCELLED    = 4;   //任务被取消
     private static final int INTERRUPTING = 5;   //任务带中断取消的中间状态，也就是执行cannel(true)方法
     private static final int INTERRUPTED  = 6;   //任务带中断取消的最终状态。
 
-    //用户提交的作业任务
+    //用户提交的作业任务，提交的作业任务是Runnable的话，最终也是包装成Callable的。
     private Callable<V> callable;
     
     //结果，包装正常的result，或非正常的异常结果。异常结果往往throw
@@ -110,7 +112,7 @@ public class FutureTask<V> implements RunnableFuture<V> {
             return;
         try {
             Callable<V> c = callable;
-            if (c != null && state == NEW) { //上面条件进来时，此时刚好执行了cannel方法修改state条件
+            if (c != null && state == NEW) { //还没有线程执行过，且没有cancel。
                 V result;
                 boolean ran;
                 try {
@@ -129,7 +131,8 @@ public class FutureTask<V> implements RunnableFuture<V> {
             
             int s = state;
             if (s >= INTERRUPTING)
-                handlePossibleCancellationInterrupt(s); //避免run方法结束时，存在state == INTERRUPTING 这个中间状态
+		//这种情况是try里面的if条件没满足。即被cancel了。避免run方法结束时，存在state == INTERRUPTING 这个中间状态
+                handlePossibleCancellationInterrupt(s);
         }
     }
 
@@ -157,7 +160,7 @@ public class FutureTask<V> implements RunnableFuture<V> {
                   Thread t = q.thread;
                   if (t != null) {
                       q.thread = null;
-                      LockSupport.unpark(t); 唤醒线程
+                      LockSupport.unpark(t); //唤醒线程
                   }
                   WaitNode next = q.next;
                   if (next == null)
@@ -235,7 +238,7 @@ public class FutureTask<V> implements RunnableFuture<V> {
 
 ### 拓展Future
 既然Future#get方法只能阻塞获取节点，而且上面分析了FutureTask也已经留了口子，那么就实现一个基于回调可监听的Future。
-具体源码在[ListenableFuture]()
+具体源码在[ListenableFuture](https://github.com/wang007/pandora/tree/master/pandora-ext/src/main/java/com/github/pandora/listenable)
 ```java
         //实现后的效果
         ListenableExecutorService executor = ListenableExecutor.create(Executors.newSingleThreadExecutor());
@@ -249,8 +252,8 @@ public class FutureTask<V> implements RunnableFuture<V> {
                 ar.cause().printStackTrace();
             }
         });
-        //或者用链式串联异步结果
 
+        //或者用链式串联异步结果
         executor.submit(() -> {
             //do something
             return "submit";
@@ -273,8 +276,7 @@ public class FutureTask<V> implements RunnableFuture<V> {
 > CompletableFuture继承了CompletionStage,java中的阻塞Future，所以CompletableFuture本身还是可以阻塞的。
 
 #### CompletionStage
-CompletionStage所有的方法，定义如何获取结果并做响应的操作。但是没有定义如何未这个异步结果设置结果，而设置这个操作直接就实现在具体的实现类
-CompletableFuture中，这就显得非常糟糕了，使用者必须去依赖CompletableFuture这个具体的实现了。
+CompletionStage所有的方法，定义如何获取结果并做响应的操作。但是没有定义如何为这个异步结果设置结果，而设置这个操作直接就实现在具体的实现类CompletableFuture中，这就显得非常糟糕了，使用者必须去依赖CompletableFuture这个具体的实现了。
 理想情况下，应该设置一个专门设置异步结果的接口。假设叫做Promise。 Promise只需要关注如何写，CompletionStage只需要关注如何获取结果。
 而Netty就是这么做的。参考Netty的Promise，Future。
 
@@ -282,38 +284,39 @@ CompletionStage api的设计同样非常糟糕，重复功能相同的api。以�
 而且接口方法很难理解，远没有reactive的命名简洁。
 
 下面就先给api做一个分类。后面使用的时候可以参考这个分类使用。
-1. 在异步结果正常完成时调用。区别在于入参和出参。 fuck api  相当于reactive#map
+#### 1. 在异步结果正常完成时调用。区别在于入参和出参。 fuck api  相当于reactive#map
      1. {@link #thenApply(Function),#thenApplyAsync(Function),#thenApplyAsync(Function, Executor)}
      2. {@link #thenAccept(Consumer),#thenAcceptAsync(Consumer),#thenAcceptAsync(Consumer, Executor)}
      3. {@link #thenRun(Runnable),#thenRunAsync(Runnable),#thenAcceptAsync(Consumer, Executor)}
-2. 当两个异步结果都正常完成时调用，区别在于入参和出参。fuck api  相当于reactive#zipWith
+#### 2. 当两个异步结果都正常完成时调用，区别在于入参和出参。fuck api  相当于reactive#zipWith
      1. {@link #thenCombine(CompletionStage, BiFunction),#thenCombineAsync(CompletionStage, BiFunction)}
         {@link #thenCombineAsync(CompletionStage, BiFunction, Executor)}
      2. {@link #thenAcceptBoth(CompletionStage, BiConsumer),#thenAcceptBothAsync(CompletionStage, BiConsumer),
         {@link #thenAcceptBothAsync(CompletionStage, BiConsumer, Executor)}
      3. {@link #runAfterBoth(CompletionStage, Runnable),#runAfterBothAsync(CompletionStage, Runnable)}
         {@link #runAfterBothAsync(CompletionStage, Runnable, Executor)}
-3. 两个异步结果任意其中之一正常完成时调用，区别在于入参和出参。 fuck api  相当于reactive#ambWith && map
+#### 3. 两个异步结果任意其中之一正常完成时调用，区别在于入参和出参。 fuck api  相当于reactive#ambWith && map
      1. {@link #applyToEither(CompletionStage, Function),#applyToEitherAsync(CompletionStage, Function)}
         {@link #applyToEitherAsync(CompletionStage, Function, Executor)}
      2. {@link #acceptEither(CompletionStage, Consumer),#acceptEitherAsync(CompletionStage, Consumer)}
         {@link #acceptEitherAsync(CompletionStage, Consumer, Executor)}
      3. {@link #runAfterEither(CompletionStage, Runnable),#runAfterEitherAsync(CompletionStage, Runnable)}
         {@link #runAfterEitherAsync(CompletionStage, Runnable, Executor)}
-4. 当前一个异步结果正常完成时产生一个新的不同类型的异步结果。  挺好。 相当于reactive#flatMap        
+#### 4. 当前一个异步结果正常完成时产生一个新的不同类型的异步结果。  挺好。 相当于reactive#flatMap        
     1. {@link #thenCompose(Function),#thenComposeAsync(Function, Executor),#thenComposeAsync(Function)}
-5. 当异步结果异常完成时调用  相当于reactive#onErrorReturn
+#### 5. 当异步结果异常完成时调用  相当于reactive#onErrorReturn
     1. {@link #exceptionally(Function)}
-6. 当异步结果完成(包括正常或异常)时调用。 相当于reactive#doOnSubscribe
+#### 6. 当异步结果完成(包括正常或异常)时调用。 相当于reactive#doOnSubscribe
     1. {@link #whenComplete(BiConsumer),#whenCompleteAsync(BiConsumer),#whenCompleteAsync(BiConsumer, Executor)}
     2. {@link #handle(BiFunction),#handleAsync(BiFunction),#handleAsync(BiFunction, Executor)}
 
-所以一共就6种功能的方法，map, zipWith, ambWith(or) && map, flatMap, onErrorReturn, doOnSubscribe.
+所以一共就6种功能的方法，用reactiveX命名操作符概括的话就是map, zipWith, ambWith(or) && map, flatMap, onErrorReturn, doOnSubscribe.
 async结尾的方法，是带切换线程的方法。
 
 #### CompletionStage的实现
 > CompletableFuture也并没有实现一个功能相同的方法，其他功能相同的方法复用。只是区别有没有线程池(async结尾的方法)做一个复用。
   由于源码实现比较多，所以我相同功能的方法拿出一个来分析即可，其他基本都一样。
+  也就是说：thenApply和thenApplyAsync做一个实现。thenAccept和thenAcceptAsync又做一个实现分类，等等。
   
 1. map操作符 == thenApply方法
 ```java
@@ -678,7 +681,6 @@ ThenCombine跟if块的代码类似，就不展开说了。
 ```
 3. flatMap == thenCompose
 ```java
-public class Test {
     public <U> CompletableFuture<U> thenCompose
         (Function<? super T, ? extends CompletionStage<U>> fn) {
         return doThenCompose(fn, null);
@@ -746,18 +748,111 @@ public class Test {
             dst.helpPostComplete();
             return dst;
         }
-}
 ```
 4. 后面的exceptionally，whenComplete，handle，实现就跟thenApply差不多。这里就不展开说了。
    CompletableFuture源码的核心流程都已经覆盖完了。
-5. 即使CompletionStage，CompletableFuture怎么怎么不好，但没办法，这是标准库的类（亲儿子）。所以做好跟标准库的兼容还是有必要的。
+5. 即使CompletionStage，CompletableFuture怎么怎么不好，但没办法，这是标准库的类（亲儿子）。所以做好跟标准库的兼容还是有必要的。可以很方便和其他实现CompletionStage的框架或类库做集成。
 
 写了点异步相关的基础库，之前想直接继承CompletableFuture做拓展就行了。后面发现了上面所说的它回调机制的坑，
 所以就自己重写了一个CompletionStage。
-总体上，还是非常简单的。基于回调(addHandler)的方式，把上面的所有操作符都实现了。源码在这里。[CompletableResult]()
+总体上，还是非常简单的。基于回调(addHandler)的方式，把上面的所有操作符都实现了。源码在这里。[CompletableResult](https://github.com/wang007/pandora/blob/master/pandora-ext/src/main/java/com/github/pandora/asyncResult/CompletableResult.java)
+
+--- 
+还是上一篇文章说过，异步往往伴随着回调。而且还举了一个回调嵌套（callback hell）的例子，这个我们就会CompletableFuture改善一下。
+```java
+startServer(socket -> {
+            socket.read()
+                    .thenCompose(str -> {
+                        System.out.println("result -> " + str);
+                        return socket.write("1");
+                    })
+                    .thenCompose(v -> {
+                        return socket.write("2");
+                    })
+                    .thenCompose(v -> {
+                        return socket.write("3");
+                    })
+                    .whenComplete((v, err) -> {
+                        System.out.println("socket close");
+                        socket.close();
+                    });
+        });
+```
+这个看起来是不是简洁了很多。callback hell会被平铺（flat）了。这个代码跟上篇文章的回调嵌套执行结果是一样的。
+
+
+下面是如何实现的。可以看到改动也是非常小的，但是对使用方的效果完成不一样，可阅读性好非常多。
+```java
+	public CompletionStage<String> read() {
+            CompletableFuture<String> future = new CompletableFuture<>();
+            read(obj -> {
+                if(obj instanceof String) {
+                    future.complete((String) obj);
+                } else {
+                    future.completeExceptionally(obj == null ? new NullPointerException() : (Throwable) obj);
+                }
+            });
+            return future;
+        }
+
+        public CompletionStage<Void> write(String data) {
+            CompletableFuture<Void> future = new CompletableFuture<>();
+            write(data, obj -> {
+                if(obj == null) {
+                    future.complete(null);
+                } else {
+                    future.completeExceptionally(obj == null ? new NullPointerException() : (Throwable) obj);
+                }
+            });
+            return future;
+        }
+
+```
+这个例子，包含前面说到的自实现的CompletionStage，ListenableFuture也好，都是通过回调扩展出来的，所以只有回调这最原始的api，就可以做无限的拓展。
+
+
+#### 所以异步非阻塞框架，都是基于这种回调的方式，然后通过各种手段不断地去解决回调嵌套的问题。下面即将讲到的响应式编程，协程，也是如此。
+
 
 总结：
 1. Future的源码分析。
 2. 如何基于Future，改成基于回调机制的Future。
 3. CompletionStage，CompletableFuture的源码分析，分类总结。
 4. 如何简单的实现一个CompletionStage。([pandora](https://www.github.com/wang007/pandora))
+5. CompletionStage使用方式和如何改善callback hell。
+
+--- 
+好了，晚安。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
