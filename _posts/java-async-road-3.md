@@ -1,26 +1,26 @@
 ---
-title: java异步编程探究-响应式编程（ReactiveX）
+title: java异步编程探究-响应式编程
 date: 2019-12-07 02:29:44
 tags:
  - java
  - 异步
  - reactive
+ - Project Reactor
  - 响应式编程
 categories:
  - java
  - 异步
  - 响应式编程
  - reactive
---- 
+---
+
+## 零
 
 该文章是Java异步编程探究系列文章的第三章。
-
-### 前言
 
 > 响应式编程，也有不少人叫反应式。不管是响应式编程还是反应式编程，反正说的就是它。这里我不纠结于它叫啥。管它白猫还是黑猫，能打老鼠的就是好猫。所以这里都统一叫响应式编程。
 
 相信你如果是第一次接触它的话，很懵逼。到底是干啥的啊，有什么用啊。我当初也是一样。就像当初学异步一样多疑问，什么是响应式编程，为什么这样就是响应式编程啊，等等。
-
 
 先来看看reactivex官网是如何定义的。
 > An API for asynchronous programming with observable streams 一个异步编程与可观察流的API（有道翻译）
@@ -45,7 +45,7 @@ categories:
 > 这个可以类比数据库范式，数据库范式就很熟悉了吧，它可以帮助更有效的组织数据且设计表的一个参考。但是我们往往有时候为了提高查询效率，往往会做一些适当的数据冗余。所以说范式只是一个参考，一种规范吧，是充分非必要的。编程范式也是类似的，遵守这个范式可以让代码的可阅读性大大增强。callback hell的可阅读性就非常的差。
 
 实际上按照响应式的定义，CompletableFuture也是响应式对象。也就是说使用CompletableFuture编程的话也可以叫做响应式编程。只不过CompletableFuture的数据流是单一的，只能发射一个对象。
-跟Rxjava#Single，ProjectReactor#Mono类似。
+跟Rxjava#Single，Project Reactor#Mono类似。
 
 #### 背压（Back Pressure）
 背压：有些地方也翻译成反压，不过这个不重要。
@@ -65,7 +65,7 @@ categories:
 很显然用响应式编程构建的系统也可以称为响应式系统。
 
 
-### 正文
+## 正文
 在Java中，响应式编程用的比较多的是Rxjava，而作为后起之秀的Project Reactor也非常不错，而且Project Reactor还作为构建spring webflux应用的核心工具。
 实际上Rxjava和Project Reactor的代码相似度很大，所以后面我可能就挑选其中一个来深入讲解。
 Rxjava和Project Reactor都实现了响应式流的规范[Reactive Streams](https://www.reactive-streams.org)，但是只有Rxjava2的Flowable实现了规范，而Single，Observable，Maybe，Completable都没有实现规范，也就是说只有Flowable支持背压。
@@ -125,7 +125,7 @@ Processor
 好了，响应式流的规范就说完了。
 
 
-###Project Reactor
+### Project Reactor
 
 #### Mono
 可能发射1个数据（调用onNext一次），也可能不发射数据（不调用onNext）的Publisher。实际上跟Rxjava2的Maybe是差不多的，只不过Maybe没有背压。
@@ -277,7 +277,6 @@ public class CallbackMono<T> extends Mono<T> {
 用于篇幅有限，project Reactor实现原理将放到下篇文章。
 
 
-
 参考文章
 [响应式宣言](https://www.reactivemanifesto.org)
 [Reactive Stream](https://www.reactive-streams.org)
@@ -285,42 +284,7 @@ public class CallbackMono<T> extends Mono<T> {
 [Project Reactor](https://projectreactor.io)
 [什么是响应式编程](https://www.jianshu.com/p/111e0a4b9b17?utm_campaign=hugo)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+---
+好了，时间不早了，晚安。
 
 
