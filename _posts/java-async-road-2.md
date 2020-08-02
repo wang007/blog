@@ -19,6 +19,8 @@ categories:
 
 这篇文章谈谈解决callback hell的方式之一，Future。
 
+<!-- more -->
+
 > 自Java1.8起，终于在jdk中对异步回调有了类库的支持。添加了CompletableFuture。虽然这货添加了，但是可恶的CompletableFuture api极其丑陋。下面细说这个CompletableFuture。
 
 

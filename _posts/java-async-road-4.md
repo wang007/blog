@@ -18,6 +18,8 @@ categories:
 上一篇文章简单介绍了响应式编程的概念和具体的实现[Project Reactor](https://projectreactor.io/)以及[响应式流](www.reactive-streams.org)规范定义的所有接口。
 这篇文章将深入内部探究Project Reactor实现原理。实际上Project Reactor实现方式和代码风格跟Rxjava非常相似，所以理解了Project Reactor内部的运行原理，那么Rxjava也八九不离十了。而且Rxjava除了Flowable之外都是没背压的，所以实现上总体会简单一点。
 
+<!-- more -->
+
 名字解释：
 - 数据源：例如MonoJust（即Mono#just方法）、MonoDefer（即Mono#defer方法）等等。
 - 操作符：例如map、flatMap等等。即创建好实例之后调用的所有对数据源进行操作的方法。

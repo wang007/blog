@@ -22,6 +22,8 @@ categories:
 
 相信你如果是第一次接触它的话，很懵逼。到底是干啥的啊，有什么用啊。我当初也是一样。就像当初学异步一样多疑问，什么是响应式编程，为什么这样就是响应式编程啊，等等。
 
+<!-- more -->
+
 先来看看reactivex官网是如何定义的。
 > An API for asynchronous programming with observable streams 一个异步编程与可观察流的API（有道翻译）
 

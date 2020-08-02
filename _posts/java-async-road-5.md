@@ -19,6 +19,8 @@ categories:
 
 实际上，理解上融合模式的思路之后，源码看看起来就清晰很多。特别是异步融合模式，通过onNext方法向下游通知数据已准备好，很容易理解为往下游发射数据。
 
+<!-- more -->
+
 ---
 ### publishOn操作符
 ![Mono publishOn](./java-async-road-4/MonoObserveOn.png)

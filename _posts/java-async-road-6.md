@@ -20,6 +20,8 @@ categories:
 Mono是发射0|1条数据的Publisher。
 Flux是发射0|N条数据的Publisher，所以总体上Flux的实现会复杂一点。
 
+<!-- more -->
+
 ## 正文
 
 ```java
